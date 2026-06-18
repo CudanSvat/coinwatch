@@ -5,6 +5,8 @@ import {QueryClient, QueryClientProvider} from '@tanstack/react-query';
 import {GestureHandlerRootView} from 'react-native-gesture-handler';
 import {AppNavigator} from './src/navigation/AppNavigator';
 import {FavoritesProvider} from './src/store/FavoritesContext';
+import {UpdateModal} from './src/components/UpdateModal';
+import {useUpdateChecker} from './src/hooks/useUpdateChecker';
 import {Colors} from './src/theme';
 
 const queryClient = new QueryClient({
@@ -17,6 +19,8 @@ const queryClient = new QueryClient({
 });
 
 function App() {
+  const {update, dismiss} = useUpdateChecker();
+
   return (
     <GestureHandlerRootView style={{flex: 1}}>
       <SafeAreaProvider>
@@ -28,6 +32,7 @@ function App() {
         <QueryClientProvider client={queryClient}>
           <FavoritesProvider>
             <AppNavigator />
+            {update && <UpdateModal release={update} onDismiss={dismiss} />}
           </FavoritesProvider>
         </QueryClientProvider>
       </SafeAreaProvider>
