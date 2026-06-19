@@ -1,23 +1,18 @@
 import React from 'react';
 import {View, Text, StyleSheet} from 'react-native';
-import {NavigationContainer} from '@react-navigation/native';
+import {NavigationContainer, DefaultTheme} from '@react-navigation/native';
 import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
 import {createStackNavigator} from '@react-navigation/stack';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {FavoritesScreen} from '../screens/FavoritesScreen';
 import {SearchScreen} from '../screens/SearchScreen';
 import {TokenDetailScreen} from '../screens/TokenDetailScreen';
 import {Colors, FontSize} from '../theme';
+import type {TokenDetailParams} from '../types/dex';
 
 export type RootStackParamList = {
   Main: undefined;
-  TokenDetail: {
-    chainId: string;
-    pairAddress: string;
-    baseTokenSymbol: string;
-    baseTokenName: string;
-    quoteTokenSymbol: string;
-  };
-  Search: undefined;
+  TokenDetail: TokenDetailParams;
 };
 
 export type MainTabParamList = {
@@ -28,57 +23,38 @@ export type MainTabParamList = {
 const Tab = createBottomTabNavigator<MainTabParamList>();
 const Stack = createStackNavigator<RootStackParamList>();
 
-function TabIcon({
-  emoji,
-  label,
-  focused,
-}: {
-  emoji: string;
-  label: string;
-  focused: boolean;
-}) {
+function TabIcon({emoji, label, focused}: {emoji: string; label: string; focused: boolean}) {
   return (
-    <View style={tabIconStyles.container}>
-      <Text style={tabIconStyles.emoji}>{emoji}</Text>
-      <Text
-        style={[
-          tabIconStyles.label,
-          {color: focused ? Colors.primary : Colors.textMuted},
-        ]}>
+    <View style={tabStyles.container}>
+      <Text style={tabStyles.emoji}>{emoji}</Text>
+      <Text style={[tabStyles.label, {color: focused ? Colors.primary : Colors.textMuted}]}>
         {label}
       </Text>
     </View>
   );
 }
 
-const tabIconStyles = StyleSheet.create({
-  container: {
-    alignItems: 'center',
-    paddingTop: 6,
-  },
-  emoji: {
-    fontSize: 20,
-  },
-  label: {
-    fontSize: FontSize.xs,
-    fontWeight: '600',
-    marginTop: 2,
-  },
+const tabStyles = StyleSheet.create({
+  container: {alignItems: 'center', paddingTop: 6},
+  emoji: {fontSize: 20},
+  label: {fontSize: FontSize.xs, fontWeight: '600', marginTop: 2},
 });
 
 function MainTabs() {
+  const insets = useSafeAreaInsets();
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
+        tabBarShowLabel: false,
         tabBarStyle: {
           backgroundColor: Colors.surface,
           borderTopColor: Colors.border,
           borderTopWidth: 1,
-          height: 62,
-          paddingBottom: 8,
+          // Respect Android nav bar height so tabs are never hidden
+          height: 58 + insets.bottom,
+          paddingBottom: insets.bottom,
         },
-        tabBarShowLabel: false,
       }}>
       <Tab.Screen
         name="Watchlist"
@@ -101,8 +77,6 @@ function MainTabs() {
     </Tab.Navigator>
   );
 }
-
-import {DefaultTheme} from '@react-navigation/native';
 
 const darkNavTheme = {
   ...DefaultTheme,

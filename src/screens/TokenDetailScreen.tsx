@@ -1,266 +1,302 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  StatusBar,
-  Image,
-  ActivityIndicator,
+  View, Text, StyleSheet, ScrollView,
+  TouchableOpacity, StatusBar, Image, ActivityIndicator,
 } from 'react-native';
 import {useRoute, useNavigation, RouteProp} from '@react-navigation/native';
 import type {StackNavigationProp} from '@react-navigation/stack';
+import {getCoinDetail} from '../api/coingecko';
+import {getBinanceCandles, getBinanceTicker, findBinanceSymbol} from '../api/binance';
+import {getOhlcvCandles} from '../api/geckoterminal';
 import {getPairDetail} from '../api/dexscreener';
-import {DexChart} from '../components/DexChart';
-import {PriceChangePill} from '../components/PriceChangePill';
-import {Skeleton} from '../components/Skeleton';
+import {CandlestickChart} from '../components/CandlestickChart';
 import {useFavoritesContext} from '../store/FavoritesContext';
 import {Colors, Spacing, FontSize, BorderRadius} from '../theme';
-import type {PairData} from '../types/dex';
+import type {OhlcvCandle, Timeframe, TokenDetailParams} from '../types/dex';
 import type {RootStackParamList} from '../navigation/AppNavigator';
 
 type RouteProps = RouteProp<RootStackParamList, 'TokenDetail'>;
 type NavProp = StackNavigationProp<RootStackParamList>;
 
-function formatUsd(value?: number | null): string {
-  if (!value && value !== 0) {
-    return '—';
-  }
-  if (value >= 1_000_000_000) {
-    return `$${(value / 1_000_000_000).toFixed(2)}B`;
-  }
-  if (value >= 1_000_000) {
-    return `$${(value / 1_000_000).toFixed(2)}M`;
-  }
-  if (value >= 1_000) {
-    return `$${(value / 1_000).toFixed(2)}K`;
-  }
-  return `$${value.toFixed(2)}`;
+const TIMEFRAMES: {label: string; value: Timeframe}[] = [
+  {label: '15m', value: '15m'},
+  {label: '1H', value: '1h'},
+  {label: '4H', value: '4h'},
+  {label: '1D', value: '1d'},
+  {label: '1W', value: '1w'},
+];
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function fmt(v?: number | null, prefix = '$'): string {
+  if (v == null) {return '—';}
+  if (v >= 1e9) {return `${prefix}${(v / 1e9).toFixed(2)}B`;}
+  if (v >= 1e6) {return `${prefix}${(v / 1e6).toFixed(2)}M`;}
+  if (v >= 1e3) {return `${prefix}${(v / 1e3).toFixed(2)}K`;}
+  return `${prefix}${v.toFixed(2)}`;
 }
 
-function formatPrice(price?: string | null): string {
-  if (!price) {
-    return '—';
-  }
-  const num = parseFloat(price);
-  if (isNaN(num)) {
-    return '—';
-  }
-  if (num < 0.000001) {
-    return `$${num.toExponential(4)}`;
-  }
-  if (num < 0.001) {
-    return `$${num.toFixed(8)}`;
-  }
-  if (num < 1) {
-    return `$${num.toFixed(6)}`;
-  }
-  return `$${num.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 4})}`;
+function fmtPrice(p?: number | null): string {
+  if (p == null) {return '—';}
+  if (p < 0.000001) {return `$${p.toExponential(4)}`;}
+  if (p < 0.0001) {return `$${p.toFixed(8)}`;}
+  if (p < 0.01) {return `$${p.toFixed(6)}`;}
+  if (p < 1) {return `$${p.toFixed(4)}`;}
+  if (p < 10000) {return `$${p.toFixed(2)}`;}
+  return `$${p.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
 }
 
-interface StatCardProps {
-  label: string;
-  value: string;
-  valueColor?: string;
-}
-
-function StatCard({label, value, valueColor}: StatCardProps) {
+function ChangeText({value}: {value?: number | null}) {
+  if (value == null) {return <Text style={statStyles.val}>—</Text>;}
+  const pos = value >= 0;
   return (
-    <View style={statCardStyles.card}>
-      <Text style={statCardStyles.label}>{label}</Text>
-      <Text
-        style={[
-          statCardStyles.value,
-          valueColor ? {color: valueColor} : null,
-        ]}
-        numberOfLines={1}
-        adjustsFontSizeToFit>
-        {value}
-      </Text>
+    <Text style={[statStyles.val, {color: pos ? Colors.positive : Colors.negative}]}>
+      {pos ? '+' : ''}{value.toFixed(2)}%
+    </Text>
+  );
+}
+
+function StatItem({label, children}: {label: string; children: React.ReactNode}) {
+  return (
+    <View style={statStyles.item}>
+      <Text style={statStyles.label}>{label}</Text>
+      {children}
     </View>
   );
 }
 
-const statCardStyles = StyleSheet.create({
-  card: {
-    flex: 1,
+const statStyles = StyleSheet.create({
+  item: {
+    flex: 1, minWidth: '45%',
     backgroundColor: Colors.surfaceAlt,
     borderRadius: BorderRadius.md,
     padding: Spacing.md,
-    gap: Spacing.xs,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    minWidth: '45%',
+    gap: 4,
+    borderWidth: 1, borderColor: Colors.border,
   },
-  label: {
-    color: Colors.textMuted,
-    fontSize: FontSize.xs,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  value: {
-    color: Colors.textPrimary,
-    fontSize: FontSize.md,
-    fontWeight: '700',
-  },
+  label: {color: Colors.textMuted, fontSize: FontSize.xs, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5},
+  val: {color: Colors.textPrimary, fontSize: FontSize.md, fontWeight: '700'},
 });
+
+// ─── Screen ──────────────────────────────────────────────────────────────────
 
 export function TokenDetailScreen() {
   const route = useRoute<RouteProps>();
   const navigation = useNavigation<NavProp>();
-  const {chainId, pairAddress, baseTokenSymbol, baseTokenName} = route.params;
+  const params = route.params as TokenDetailParams;
+  const {source, symbol, name, imageUrl} = params;
 
   const {addFavorite, removeFavorite, isFavorite} = useFavoritesContext();
-  const [pair, setPair] = useState<PairData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const favId = source === 'coingecko'
+    ? `cg:${params.coinId}`
+    : `dex:${params.pairAddress}`;
+  const favorited = isFavorite(favId);
 
-  const favorited = isFavorite(chainId, pairAddress);
+  const [timeframe, setTimeframe] = useState<Timeframe>('1h');
+  const [candles, setCandles] = useState<OhlcvCandle[]>([]);
+  const [chartLoading, setChartLoading] = useState(true);
+  const [price, setPrice] = useState<number | null>(null);
+  const [change24h, setChange24h] = useState<number | null>(null);
+  const [change1h, setChange1h] = useState<number | null>(null);
+  const [stats, setStats] = useState<Record<string, React.ReactNode>>({});
+  const [statsLoading, setStatsLoading] = useState(true);
+  const [resolvedBinanceSymbol, setResolvedBinanceSymbol] = useState<string | null>(
+    params.binanceSymbol ?? null,
+  );
+
+  // Fetch chart candles whenever timeframe changes
+  const loadCandles = useCallback(async (tf: Timeframe) => {
+    setChartLoading(true);
+    try {
+      if (source === 'coingecko') {
+        let binSym = resolvedBinanceSymbol;
+        if (!binSym) {
+          binSym = await findBinanceSymbol(symbol);
+          setResolvedBinanceSymbol(binSym);
+        }
+        if (binSym) {
+          const data = await getBinanceCandles(binSym, tf);
+          setCandles(data);
+        }
+      } else if (params.chainId && params.pairAddress) {
+        const geckoTf = tf === '15m' ? 'minute' : tf === '1h' || tf === '4h' ? 'hour' : 'day';
+        const limit = tf === '1w' ? 200 : 100;
+        const data = await getOhlcvCandles(params.chainId, params.pairAddress, geckoTf, limit);
+        setCandles(data);
+      }
+    } catch {
+      // keep stale candles
+    } finally {
+      setChartLoading(false);
+    }
+  }, [source, symbol, params.chainId, params.pairAddress, resolvedBinanceSymbol]);
 
   useEffect(() => {
-    getPairDetail(chainId, pairAddress)
-      .then(data => setPair(data))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [chainId, pairAddress]);
+    loadCandles(timeframe);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeframe]);
 
-  const toggleFavorite = useCallback(async () => {
+  // Fetch stats once on mount
+  useEffect(() => {
+    const loadStats = async () => {
+      setStatsLoading(true);
+      try {
+        if (source === 'coingecko' && params.coinId) {
+          const [detail, ticker] = await Promise.allSettled([
+            getCoinDetail(params.coinId),
+            resolvedBinanceSymbol
+              ? getBinanceTicker(resolvedBinanceSymbol)
+              : Promise.resolve(null),
+          ]);
+          if (detail.status === 'fulfilled') {
+            const md = detail.value.market_data;
+            const p = md.current_price?.usd;
+            setPrice(p ?? null);
+            setChange24h(md.price_change_percentage_24h ?? null);
+            setChange1h(md.price_change_percentage_1h_in_currency?.usd ?? null);
+            setStats({
+              'Market Cap': <Text style={statStyles.val}>{fmt(md.market_cap?.usd)}</Text>,
+              'Volume 24h': <Text style={statStyles.val}>{fmt(md.total_volume?.usd)}</Text>,
+              'Circulating Supply': <Text style={statStyles.val}>{fmt(md.circulating_supply, '')}</Text>,
+              'Total Supply': <Text style={statStyles.val}>{fmt(md.total_supply, '')}</Text>,
+              '24h Change': <ChangeText value={md.price_change_percentage_24h} />,
+              '1h Change': <ChangeText value={md.price_change_percentage_1h_in_currency?.usd} />,
+              'ATH': <Text style={statStyles.val}>{fmtPrice(md.ath?.usd)}</Text>,
+              'ATL': <Text style={statStyles.val}>{fmtPrice(md.atl?.usd)}</Text>,
+            });
+          }
+          if (ticker.status === 'fulfilled' && ticker.value) {
+            setPrice(ticker.value.price);
+            setChange24h(ticker.value.change24h);
+          }
+        } else if (source === 'dex' && params.chainId && params.pairAddress) {
+          const pair = await getPairDetail(params.chainId, params.pairAddress);
+          if (pair) {
+            setPrice(pair.priceUsd ? parseFloat(pair.priceUsd) : null);
+            setChange24h(pair.priceChange?.h24 ?? null);
+            setChange1h(pair.priceChange?.h1 ?? null);
+            setStats({
+              'Market Cap': <Text style={statStyles.val}>{fmt(pair.marketCap)}</Text>,
+              'FDV': <Text style={statStyles.val}>{fmt(pair.fdv)}</Text>,
+              'Liquidity': <Text style={statStyles.val}>{fmt(pair.liquidity?.usd)}</Text>,
+              'Volume 24h': <Text style={statStyles.val}>{fmt(pair.volume?.h24)}</Text>,
+              'Volume 1h': <Text style={statStyles.val}>{fmt(pair.volume?.h1)}</Text>,
+              'Buys 24h': <Text style={[statStyles.val, {color: Colors.positive}]}>{pair.txns?.h24?.buys ?? '—'}</Text>,
+              'Sells 24h': <Text style={[statStyles.val, {color: Colors.negative}]}>{pair.txns?.h24?.sells ?? '—'}</Text>,
+              '24h Change': <ChangeText value={pair.priceChange?.h24} />,
+              '1h Change': <ChangeText value={pair.priceChange?.h1} />,
+              'DEX': <Text style={statStyles.val}>{pair.dexId?.toUpperCase()}</Text>,
+            });
+          }
+        }
+      } catch {
+        // keep empty stats
+      } finally {
+        setStatsLoading(false);
+      }
+    };
+    loadStats();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toggleFavorite = useCallback(() => {
     if (favorited) {
-      await removeFavorite(chainId, pairAddress);
+      removeFavorite(favId);
     } else {
-      await addFavorite({
-        chainId,
-        pairAddress,
-        baseTokenSymbol: pair?.baseToken.symbol ?? baseTokenSymbol,
-        baseTokenName: pair?.baseToken.name ?? baseTokenName,
-        quoteTokenSymbol: pair?.quoteToken.symbol ?? '',
-        imageUrl: pair?.info?.imageUrl,
+      addFavorite({
+        id: favId,
+        source,
+        symbol,
+        name,
+        imageUrl,
+        coinId: params.coinId,
+        binanceSymbol: resolvedBinanceSymbol ?? undefined,
+        chainId: params.chainId,
+        pairAddress: params.pairAddress,
+        quoteTokenSymbol: params.quoteTokenSymbol,
       });
     }
-  }, [
-    favorited,
-    chainId,
-    pairAddress,
-    pair,
-    baseTokenSymbol,
-    baseTokenName,
-    addFavorite,
-    removeFavorite,
-  ]);
+  }, [favorited, favId, source, symbol, name, imageUrl, params, resolvedBinanceSymbol, addFavorite, removeFavorite]);
+
+  const isPositive = (change24h ?? 0) >= 0;
 
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
 
-      {/* Header */}
+      {/* Header bar */}
       <View style={styles.headerBar}>
-        <TouchableOpacity
-          style={styles.backBtn}
-          onPress={() => navigation.goBack()}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
           <Text style={styles.backArrow}>←</Text>
         </TouchableOpacity>
-        <View style={styles.headerTitle}>
-          {loading ? (
-            <Skeleton width={120} height={18} />
-          ) : (
-            <>
-              {pair?.info?.imageUrl && (
-                <Image
-                  source={{uri: pair.info.imageUrl}}
-                  style={styles.headerLogo}
-                />
-              )}
-              <Text style={styles.headerSymbol} numberOfLines={1}>
-                {pair?.baseToken.symbol ?? baseTokenSymbol}
-                <Text style={styles.headerQuote}>
-                  /{pair?.quoteToken.symbol ?? ''}
-                </Text>
-              </Text>
-            </>
-          )}
+        <View style={styles.headerMid}>
+          {imageUrl ? (
+            <Image source={{uri: imageUrl}} style={styles.headerLogo} />
+          ) : null}
+          <Text style={styles.headerSymbol}>{symbol}</Text>
+          <Text style={styles.headerName}>{name}</Text>
         </View>
-        <TouchableOpacity style={styles.starBtn} onPress={toggleFavorite}>
-          <Text style={styles.starIcon}>{favorited ? '★' : '☆'}</Text>
+        <TouchableOpacity onPress={toggleFavorite} style={styles.starBtn}>
+          <Text style={[styles.star, {color: favorited ? Colors.warning : Colors.textMuted}]}>
+            {favorited ? '★' : '☆'}
+          </Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
+        {/* Price */}
+        <View style={styles.priceRow}>
+          <Text style={styles.price}>{fmtPrice(price)}</Text>
+          <View style={[
+            styles.changePill,
+            {backgroundColor: isPositive ? Colors.positive + '22' : Colors.negative + '22'},
+          ]}>
+            <Text style={[styles.changePillText, {color: isPositive ? Colors.positive : Colors.negative}]}>
+              {isPositive ? '+' : ''}{(change24h ?? 0).toFixed(2)}%
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.priceSubtitle}>
+          1h: {change1h != null ? `${change1h >= 0 ? '+' : ''}${change1h.toFixed(2)}%` : '—'}
+          {'   '}24h: {change24h != null ? `${change24h >= 0 ? '+' : ''}${change24h.toFixed(2)}%` : '—'}
+        </Text>
 
-        {/* Price Section */}
-        <View style={styles.priceSection}>
-          {loading ? (
-            <>
-              <Skeleton width={180} height={36} borderRadius={8} />
-              <View style={styles.changeRow}>
-                <Skeleton width={80} height={22} borderRadius={BorderRadius.full} style={{marginTop: 8}} />
-                <Skeleton width={80} height={22} borderRadius={BorderRadius.full} style={{marginTop: 8}} />
-              </View>
-            </>
-          ) : (
-            <>
-              <Text style={styles.price}>{formatPrice(pair?.priceUsd)}</Text>
-              <View style={styles.changeRow}>
-                <Text style={styles.changeLabel}>5m</Text>
-                <PriceChangePill value={pair?.priceChange?.m5} size="sm" />
-                <Text style={styles.changeLabel}>1h</Text>
-                <PriceChangePill value={pair?.priceChange?.h1} size="sm" />
-                <Text style={styles.changeLabel}>24h</Text>
-                <PriceChangePill value={pair?.priceChange?.h24} size="sm" />
-              </View>
-            </>
-          )}
+        {/* Timeframe selector */}
+        <View style={styles.tfRow}>
+          {TIMEFRAMES.map(tf => (
+            <TouchableOpacity
+              key={tf.value}
+              style={[styles.tfBtn, timeframe === tf.value && styles.tfBtnActive]}
+              onPress={() => setTimeframe(tf.value)}>
+              <Text style={[styles.tfText, timeframe === tf.value && styles.tfTextActive]}>
+                {tf.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
 
         {/* Chart */}
-        <DexChart chainId={chainId} pairAddress={pairAddress} height={420} />
+        <CandlestickChart candles={candles} height={300} loading={chartLoading && candles.length === 0} />
 
-        {/* Stats */}
+        {/* Stats grid */}
         <View style={styles.statsSection}>
-          <Text style={styles.sectionTitle}>Statistics</Text>
-          {loading ? (
-            <ActivityIndicator
-              color={Colors.primary}
-              style={{marginVertical: Spacing.base}}
-            />
+          <Text style={styles.statsTitle}>Statistics</Text>
+          {statsLoading ? (
+            <ActivityIndicator color={Colors.primary} style={{marginVertical: Spacing.base}} />
           ) : (
             <View style={styles.statsGrid}>
-              <StatCard label="Market Cap" value={formatUsd(pair?.marketCap)} />
-              <StatCard label="FDV" value={formatUsd(pair?.fdv)} />
-              <StatCard label="Liquidity" value={formatUsd(pair?.liquidity?.usd)} />
-              <StatCard label="Volume 24h" value={formatUsd(pair?.volume?.h24)} />
-              <StatCard label="Volume 6h" value={formatUsd(pair?.volume?.h6)} />
-              <StatCard label="Volume 1h" value={formatUsd(pair?.volume?.h1)} />
-              <StatCard
-                label="Buys 24h"
-                value={`${pair?.txns?.h24?.buys ?? '—'}`}
-                valueColor={Colors.positive}
-              />
-              <StatCard
-                label="Sells 24h"
-                value={`${pair?.txns?.h24?.sells ?? '—'}`}
-                valueColor={Colors.negative}
-              />
-              <StatCard label="DEX" value={pair?.dexId?.toUpperCase() ?? '—'} />
-              <StatCard
-                label="Chain"
-                value={pair?.chainId?.toUpperCase() ?? chainId.toUpperCase()}
-              />
+              {Object.entries(stats).map(([label, val]) => (
+                <StatItem key={label} label={label}>{val}</StatItem>
+              ))}
             </View>
           )}
         </View>
 
-        {/* Add/Remove favorite CTA */}
+        {/* Watchlist button */}
         <TouchableOpacity
-          style={[
-            styles.favButton,
-            favorited ? styles.favButtonActive : null,
-          ]}
+          style={[styles.favBtn, favorited && styles.favBtnActive]}
           onPress={toggleFavorite}>
-          <Text style={styles.favButtonText}>
+          <Text style={styles.favBtnText}>
             {favorited ? '★  Remove from Watchlist' : '☆  Add to Watchlist'}
           </Text>
         </TouchableOpacity>
@@ -270,121 +306,58 @@ export function TokenDetailScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
+  container: {flex: 1, backgroundColor: Colors.background},
   headerBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.sm,
-    paddingTop: Spacing.base,
-    paddingBottom: Spacing.sm,
-    gap: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  backBtn: {
-    padding: Spacing.sm,
-  },
-  backArrow: {
-    color: Colors.textPrimary,
-    fontSize: FontSize.xl,
-  },
-  headerTitle: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.md,
+    borderBottomWidth: 1, borderBottomColor: Colors.border,
     gap: Spacing.sm,
   },
-  headerLogo: {
-    width: 28,
-    height: 28,
-    borderRadius: BorderRadius.full,
-    backgroundColor: Colors.surfaceAlt,
+  backBtn: {padding: Spacing.sm},
+  backArrow: {color: Colors.textPrimary, fontSize: FontSize.xl},
+  headerMid: {flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm},
+  headerLogo: {width: 26, height: 26, borderRadius: BorderRadius.full, backgroundColor: Colors.surfaceAlt},
+  headerSymbol: {color: Colors.textPrimary, fontSize: FontSize.lg, fontWeight: '800'},
+  headerName: {color: Colors.textSecondary, fontSize: FontSize.sm, flexShrink: 1},
+  starBtn: {padding: Spacing.sm},
+  star: {fontSize: 24},
+  scroll: {paddingBottom: Spacing.xxl},
+  priceRow: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.base, paddingTop: Spacing.base, paddingBottom: 4,
   },
-  headerSymbol: {
-    color: Colors.textPrimary,
-    fontSize: FontSize.lg,
-    fontWeight: '700',
+  price: {color: Colors.textPrimary, fontSize: FontSize.xxxl, fontWeight: '800', letterSpacing: -1},
+  changePill: {paddingHorizontal: 10, paddingVertical: 4, borderRadius: BorderRadius.full},
+  changePillText: {fontSize: FontSize.sm, fontWeight: '700'},
+  priceSubtitle: {color: Colors.textMuted, fontSize: FontSize.sm, paddingHorizontal: Spacing.base, paddingBottom: Spacing.md},
+  tfRow: {
+    flexDirection: 'row', gap: Spacing.xs,
+    paddingHorizontal: Spacing.base, paddingBottom: Spacing.sm,
   },
-  headerQuote: {
-    color: Colors.textSecondary,
-    fontWeight: '400',
-    fontSize: FontSize.md,
+  tfBtn: {
+    flex: 1, paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.md, alignItems: 'center',
+    backgroundColor: Colors.surface,
+    borderWidth: 1, borderColor: Colors.border,
   },
-  starBtn: {
-    padding: Spacing.sm,
-  },
-  starIcon: {
-    fontSize: 24,
-    color: Colors.warning,
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingBottom: Spacing.xxl,
-  },
-  priceSection: {
-    paddingHorizontal: Spacing.base,
-    paddingVertical: Spacing.base,
-    gap: Spacing.sm,
-  },
-  price: {
-    color: Colors.textPrimary,
-    fontSize: FontSize.xxxl,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  changeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    flexWrap: 'wrap',
-  },
-  changeLabel: {
-    color: Colors.textMuted,
-    fontSize: FontSize.xs,
-    fontWeight: '600',
-  },
+  tfBtnActive: {backgroundColor: Colors.primary, borderColor: Colors.primary},
+  tfText: {color: Colors.textSecondary, fontSize: FontSize.sm, fontWeight: '600'},
+  tfTextActive: {color: Colors.white},
   statsSection: {
-    marginHorizontal: Spacing.base,
-    marginTop: Spacing.base,
+    margin: Spacing.base,
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
     padding: Spacing.base,
-    borderWidth: 1,
-    borderColor: Colors.border,
+    borderWidth: 1, borderColor: Colors.border,
   },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.sm,
-  },
-  sectionTitle: {
-    color: Colors.textPrimary,
-    fontSize: FontSize.base,
-    fontWeight: '700',
-    marginBottom: Spacing.sm,
-  },
-  favButton: {
-    margin: Spacing.base,
-    marginTop: Spacing.lg,
-    paddingVertical: Spacing.md,
-    borderRadius: BorderRadius.full,
-    backgroundColor: Colors.surface,
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
+  statsTitle: {color: Colors.textPrimary, fontSize: FontSize.base, fontWeight: '700', marginBottom: Spacing.md},
+  statsGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm},
+  favBtn: {
+    marginHorizontal: Spacing.base, marginTop: Spacing.sm,
+    paddingVertical: Spacing.md, borderRadius: BorderRadius.full,
+    backgroundColor: Colors.surface, borderWidth: 1.5, borderColor: Colors.primary,
     alignItems: 'center',
   },
-  favButtonActive: {
-    backgroundColor: Colors.primary + '22',
-    borderColor: Colors.warning,
-  },
-  favButtonText: {
-    color: Colors.textPrimary,
-    fontSize: FontSize.base,
-    fontWeight: '700',
-  },
+  favBtnActive: {backgroundColor: Colors.primary + '22', borderColor: Colors.warning},
+  favBtnText: {color: Colors.textPrimary, fontSize: FontSize.base, fontWeight: '700'},
 });

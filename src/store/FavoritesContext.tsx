@@ -6,9 +6,9 @@ type FavoritesContextType = ReturnType<typeof useFavorites>;
 const FavoritesContext = createContext<FavoritesContextType | null>(null);
 
 export function FavoritesProvider({children}: {children: React.ReactNode}) {
-  const favorites = useFavorites();
+  const value = useFavorites();
   return (
-    <FavoritesContext.Provider value={favorites}>
+    <FavoritesContext.Provider value={value}>
       {children}
     </FavoritesContext.Provider>
   );

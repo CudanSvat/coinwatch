@@ -1,16 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {useCallback, useEffect, useState} from 'react';
-import type {FavoritePair} from '../types/dex';
+import type {FavoriteItem} from '../types/dex';
 
-const STORAGE_KEY = '@trading_favorites';
+const STORAGE_KEY = '@trading_favorites_v2';
 
 export function useFavorites() {
-  const [favorites, setFavorites] = useState<FavoritePair[]>([]);
+  const [favorites, setFavorites] = useState<FavoriteItem[]>([]);
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    loadFavorites();
-  }, []);
 
   const loadFavorites = useCallback(async () => {
     try {
@@ -19,73 +15,49 @@ export function useFavorites() {
         setFavorites(JSON.parse(raw));
       }
     } catch {
-      // storage read failure is non-fatal
+      // non-fatal
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const saveFavorites = useCallback(async (updated: FavoritePair[]) => {
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      setFavorites(updated);
-    } catch {
-      // storage write failure is non-fatal
-    }
+  useEffect(() => {
+    loadFavorites();
+  }, [loadFavorites]);
+
+  const persist = useCallback((items: FavoriteItem[]) => {
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(items)).catch(() => {});
   }, []);
 
   const addFavorite = useCallback(
-    async (pair: Omit<FavoritePair, 'addedAt'>) => {
+    (item: Omit<FavoriteItem, 'addedAt'>) => {
       setFavorites(prev => {
-        const exists = prev.some(
-          f =>
-            f.chainId === pair.chainId &&
-            f.pairAddress === pair.pairAddress,
-        );
-        if (exists) {
+        if (prev.some(f => f.id === item.id)) {
           return prev;
         }
-        const updated = [...prev, {...pair, addedAt: Date.now()}];
-        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated)).catch(
-          () => {},
-        );
+        const updated = [...prev, {...item, addedAt: Date.now()}];
+        persist(updated);
         return updated;
       });
     },
-    [],
+    [persist],
   );
 
   const removeFavorite = useCallback(
-    async (chainId: string, pairAddress: string) => {
+    (id: string) => {
       setFavorites(prev => {
-        const updated = prev.filter(
-          f => !(f.chainId === chainId && f.pairAddress === pairAddress),
-        );
-        AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated)).catch(
-          () => {},
-        );
+        const updated = prev.filter(f => f.id !== id);
+        persist(updated);
         return updated;
       });
     },
-    [],
+    [persist],
   );
 
   const isFavorite = useCallback(
-    (chainId: string, pairAddress: string): boolean => {
-      return favorites.some(
-        f => f.chainId === chainId && f.pairAddress === pairAddress,
-      );
-    },
+    (id: string): boolean => favorites.some(f => f.id === id),
     [favorites],
   );
 
-  return {
-    favorites,
-    loading,
-    addFavorite,
-    removeFavorite,
-    isFavorite,
-    refresh: loadFavorites,
-    saveFavorites,
-  };
+  return {favorites, loading, addFavorite, removeFavorite, isFavorite, refresh: loadFavorites};
 }
