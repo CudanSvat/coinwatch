@@ -62,9 +62,10 @@ jobs:
   release:
     name: Create Release APK
     runs-on: ubuntu-latest
-    # Only run on version tags like v1.0.0
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
